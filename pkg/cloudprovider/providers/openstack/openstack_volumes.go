@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
 	k8s_volume "k8s.io/kubernetes/pkg/volume"
 
 	"github.com/gophercloud/gophercloud"
@@ -64,6 +65,10 @@ type Volume struct {
 	Name string
 	// Current status of the volume.
 	Status string
+	// Metadata KV pairs
+	Metadata map[string]string
+	// Availability Zone
+	AvailabilityZone string
 }
 
 type VolumeCreateOpts struct {
@@ -132,9 +137,11 @@ func (volumes *VolumesV1) getVolume(volumeID string) (Volume, error) {
 	}
 
 	volume := Volume{
-		ID:     volumeV1.ID,
-		Name:   volumeV1.Name,
-		Status: volumeV1.Status,
+		ID:               volumeV1.ID,
+		Name:             volumeV1.Name,
+		Status:           volumeV1.Status,
+		Metadata:         volumeV1.Metadata,
+		AvailabilityZone: volumeV1.AvailabilityZone,
 	}
 
 	if len(volumeV1.Attachments) > 0 && volumeV1.Attachments[0]["server_id"] != nil {
@@ -156,9 +163,11 @@ func (volumes *VolumesV2) getVolume(volumeID string) (Volume, error) {
 	}
 
 	volume := Volume{
-		ID:     volumeV2.ID,
-		Name:   volumeV2.Name,
-		Status: volumeV2.Status,
+		ID:               volumeV2.ID,
+		Name:             volumeV2.Name,
+		Status:           volumeV2.Status,
+		Metadata:         volumeV2.Metadata,
+		AvailabilityZone: volumeV2.AvailabilityZone,
 	}
 
 	if len(volumeV2.Attachments) > 0 {
@@ -296,6 +305,18 @@ func (os *OpenStack) getVolume(volumeID string) (Volume, error) {
 		return Volume{}, err
 	}
 	return volumes.getVolume(volumeID)
+}
+
+// Retrieve Volume labels
+func (os *OpenStack) GetVolumeLabels(volumeID string) (map[string]string, error) {
+	volume, err := os.getVolume(volumeID)
+	if err != nil {
+		return nil, err
+	}
+	labels := volume.Metadata
+	labels[kubeletapis.LabelZoneFailureDomain] = volume.AvailabilityZone
+	labels[kubeletapis.LabelZoneRegion] = os.region
+	return labels, nil
 }
 
 // Create a volume of given size (in GiB)

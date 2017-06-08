@@ -27,6 +27,7 @@ import (
 	"k8s.io/kubernetes/pkg/cloudprovider"
 	"k8s.io/kubernetes/pkg/cloudprovider/providers/aws"
 	"k8s.io/kubernetes/pkg/cloudprovider/providers/gce"
+	"k8s.io/kubernetes/pkg/cloudprovider/providers/openstack"
 	kubeapiserveradmission "k8s.io/kubernetes/pkg/kubeapiserver/admission"
 	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
 	vol "k8s.io/kubernetes/pkg/volume"
@@ -49,6 +50,7 @@ type persistentVolumeLabel struct {
 	ebsVolumes       aws.Volumes
 	cloudConfig      []byte
 	gceCloudProvider *gce.GCECloud
+	openstackCloud   *openstack.OpenStack
 }
 
 var _ kubeapiserveradmission.WantsCloudConfig = &persistentVolumeLabel{}
@@ -95,6 +97,13 @@ func (l *persistentVolumeLabel) Admit(a admission.Attributes) (err error) {
 		}
 		volumeLabels = labels
 	}
+	if volume.Spec.Cinder != nil {
+		labels, err := l.findOpenstackCinderLabels(volume)
+		if err != nil {
+			return admission.NewForbidden(a, fmt.Errorf("error querying OpenStack Cinder volume %s: %v", volume.Spec.Cinder.VolumeID, err))
+		}
+		volumeLabels = labels
+	}
 
 	if len(volumeLabels) != 0 {
 		if volume.Labels == nil {
@@ -109,6 +118,51 @@ func (l *persistentVolumeLabel) Admit(a admission.Attributes) (err error) {
 	}
 
 	return nil
+}
+
+func (l *persistentVolumeLabel) findOpenstackCinderLabels(volume *api.PersistentVolume) (map[string]string, error) {
+
+	if volume.Spec.Cinder.VolumeID == vol.ProvisionedVolumeName {
+		return nil, nil
+	}
+
+	openstackCloud, err := l.getOpenStackCloud()
+	if err != nil {
+		return nil, err
+	}
+	if openstackCloud == nil {
+		return nil, fmt.Errorf("unable to build OpenStack cloud provider for Cinder")
+	}
+
+	labels, err := openstackCloud.GetVolumeLabels(volume.Spec.Cinder.VolumeID)
+	if err != nil {
+		return nil, err
+	}
+
+	return labels, nil
+}
+
+func (l *persistentVolumeLabel) getOpenStackCloud() (*openstack.OpenStack, error) {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	if l.openstackCloud == nil {
+		var cloudConfigReader io.Reader
+		if len(l.cloudConfig) > 0 {
+			cloudConfigReader = bytes.NewReader(l.cloudConfig)
+		}
+		cloudProvider, err := cloudprovider.GetCloudProvider("openstack", cloudConfigReader)
+		if err != nil || cloudProvider == nil {
+			return nil, err
+		}
+		openstackCloud, ok := cloudProvider.(*openstack.OpenStack)
+		if !ok {
+			// GetCloudProvider has gone very wrong
+			return nil, fmt.Errorf("error retrieving OpenStack cloud provider")
+		}
+		l.openstackCloud = openstackCloud
+	}
+	return l.openstackCloud, nil
 }
 
 func (l *persistentVolumeLabel) findAWSEBSLabels(volume *api.PersistentVolume) (map[string]string, error) {
